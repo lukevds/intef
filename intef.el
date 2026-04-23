@@ -182,7 +182,8 @@ Note that all tags and values associated with `FILENAME' will be lost."
 
 (defun intef--kill-buffer-hook ()
   (intef--write-database-file)
-  (setq intef-database nil))
+  (setq intef-database nil
+        intef-buffer nil))
 
 (defun intef--setup (sort-fn filter-fn &optional re-render)
   (when (and re-render intef-buffer) (kill-buffer intef-buffer))
