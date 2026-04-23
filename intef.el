@@ -19,6 +19,9 @@
   "Database  currently open in hash-table format.
 `nil' if no database is open.")
 
+(defvar intef-marked-rows nil
+  "Set of marked rows in Intef buffer")
+
 ;; database operations
 
 
@@ -135,11 +138,21 @@ Note that all tags and values associated with `FILENAME' will be lost."
       (let ((tag-start (point)))
         (cl-loop
          for value in values do
-         (let ((value-start (point)))
+         (let ((value-start (point))
+               (row (list file tag value)))
+           (add-text-properties
+            (point)
+            (progn
+              (insert (if (member row intef-marked-rows) 42 ? )
+                      ? )
+              (point))
+            '(column mark))
+
            (add-text-properties
             (point)
             (progn (insert file ? ) (point))
             '(column file))
+
            (add-text-properties
             (1- (point))
             (point)
@@ -183,7 +196,8 @@ Note that all tags and values associated with `FILENAME' will be lost."
 (defun intef--kill-buffer-hook ()
   (intef--write-database-file)
   (setq intef-database nil
-        intef-buffer nil))
+        intef-buffer nil
+        intef-marked-rows nil))
 
 (defun intef--setup (sort-fn filter-fn &optional re-render)
   (when (and re-render intef-buffer) (kill-buffer intef-buffer))
@@ -252,6 +266,47 @@ Note that all tags and values associated with `FILENAME' will be lost."
   (if intef-buffer
       (kill-buffer intef-buffer)
     (intef--kill-buffer-hook)))
+
+(defun intef-buffer-mark-rows ()
+  (interactive)
+  (setq buffer-read-only nil)
+  (save-excursion
+    (if (region-active-p)
+        (let* ((reg-beg (region-beginning))
+               (reg-end (region-end))
+               (beg (progn
+                      (goto-char reg-beg)
+                      (forward-line 0)
+                      (point)))
+               (end (progn
+                      (goto-char reg-end)
+                      (forward-line 0)
+                      (point))))
+          (goto-char beg)
+          (while (< (point) end)
+            (let ((row
+                   (list
+                    (get-text-property (point) 'file)
+                    (get-text-property (point) 'tag)
+                    (get-text-property (point) 'value))))
+              (unless (member row intef-marked-rows)
+                (setq intef-marked-rows
+                      (cons row intef-marked-rows))
+                (delete-char 1)
+                (insert 42)))
+            (forward-line 1)))
+      (let ((row
+             (list
+              (get-text-property (point) 'file)
+              (get-text-property (point) 'tag)
+              (get-text-property (point) 'value))))
+        (forward-line 0)
+        (unless (member row intef-marked-rows)
+          (setq intef-marked-rows
+                (cons row intef-marked-rows))
+          (delete-char 1)
+          (insert 42)))))
+  (setq buffer-read-only t))
 
 (defun intef-buffer-files-tag (filenames tag value)
   "Tags selected files")
