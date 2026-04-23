@@ -55,11 +55,11 @@ an alist from tag to values. For more information on
 `intef-database-filename's format read documentation of
 `intef--read-database-file'."
   (if intef-database
-      (with-temp-file filename
+      (with-temp-file intef-database-filename
         (let ((buf (current-buffer)))
           (erase-buffer)
           (insert ?\()
-          (cl-loop for k being the hash-keys of hash-table
+          (cl-loop for k being the hash-keys of intef-database
                    using (hash-values v)
                    do
                    (insert ?\()
