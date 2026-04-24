@@ -143,7 +143,8 @@ Note that all tags and values associated with `FILENAME' will be lost."
            (add-text-properties
             (point)
             (progn
-              (insert (if (member row intef-marked-rows) 42 ? )
+              (insert ? 
+                      (if (member row intef-marked-rows) 42 ? )
                       ? )
               (point))
             '(column mark))
@@ -215,6 +216,9 @@ Note that all tags and values associated with `FILENAME' will be lost."
 (define-derived-mode intef-mode special-mode "Intef"
   :interactive nil)
 
+(keymap-set intef-mode-map "m" #'intef-buffer-mark-rows)
+(keymap-set intef-mode-map "u" #'intef-buffer-unmark-rows)
+
 (defun intef ()
   (interactive)
   (intef--setup nil nil))
@@ -270,8 +274,8 @@ Note that all tags and values associated with `FILENAME' will be lost."
 (defun intef-buffer-mark-rows ()
   (interactive)
   (setq buffer-read-only nil)
-  (save-excursion
-    (if (region-active-p)
+  (if (use-region-p)
+      (save-excursion
         (let* ((reg-beg (region-beginning))
                (reg-end (region-end))
                (beg (progn
@@ -280,7 +284,7 @@ Note that all tags and values associated with `FILENAME' will be lost."
                       (point)))
                (end (progn
                       (goto-char reg-end)
-                      (forward-line 0)
+                      (end-of-line)
                       (point))))
           (goto-char beg)
           (while (< (point) end)
@@ -292,20 +296,67 @@ Note that all tags and values associated with `FILENAME' will be lost."
               (unless (member row intef-marked-rows)
                 (setq intef-marked-rows
                       (cons row intef-marked-rows))
+                (forward-char)
                 (delete-char 1)
                 (insert 42)))
-            (forward-line 1)))
-      (let ((row
-             (list
-              (get-text-property (point) 'file)
-              (get-text-property (point) 'tag)
-              (get-text-property (point) 'value))))
-        (forward-line 0)
-        (unless (member row intef-marked-rows)
-          (setq intef-marked-rows
-                (cons row intef-marked-rows))
-          (delete-char 1)
-          (insert 42)))))
+            (forward-line 1))))
+    (let ((row
+           (list
+            (get-text-property (point) 'file)
+            (get-text-property (point) 'tag)
+            (get-text-property (point) 'value))))
+      (forward-line 0)
+      (unless (member row intef-marked-rows)
+        (setq intef-marked-rows
+              (cons row intef-marked-rows))
+        (forward-char)
+        (delete-char 1)
+        (insert 42)))
+    (forward-line 1))
+  (setq buffer-read-only t))
+
+(defun intef-buffer-unmark-rows ()
+  (interactive)
+  (setq buffer-read-only nil)
+  (if (use-region-p)
+      (save-excursion
+        (let* ((reg-beg (region-beginning))
+               (reg-end (region-end))
+               (beg (progn
+                      (goto-char reg-beg)
+                      (forward-line 0)
+                      (point)))
+               (end (progn
+                      (goto-char reg-end)
+                      (end-of-line)
+                      (point))))
+          (goto-char beg)
+          (while (< (point) end)
+            (let ((row
+                   (list
+                    (get-text-property (point) 'file)
+                    (get-text-property (point) 'tag)
+                    (get-text-property (point) 'value))))
+              (when (member row intef-marked-rows)
+                (setq intef-marked-rows
+                      (delete row intef-marked-rows))
+                (forward-char)
+                (delete-char 1)
+                (insert ? )))
+            (forward-line 1))))
+    (let ((row
+           (list
+            (get-text-property (point) 'file)
+            (get-text-property (point) 'tag)
+            (get-text-property (point) 'value))))
+      (forward-line 0)
+      (when (member row intef-marked-rows)
+        (setq intef-marked-rows
+              (delete row intef-marked-rows))
+        (forward-char)
+        (delete-char 1)
+        (insert ? )))
+    (forward-line 1))
   (setq buffer-read-only t))
 
 (defun intef-buffer-files-tag (filenames tag value)
