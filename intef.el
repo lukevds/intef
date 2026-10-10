@@ -2,9 +2,14 @@
 
 (defvar intef-db 'unloaded
   "intef tagged files")
+(defvar-local intef-db- nil
+  "intef tagged files")
 
 (defvar intef-file (expand-file-name (concat user-emacs-directory "intef.lisp"))
   "storage location for intef database")
+(defvar-local intef-file- (expand-file-name (concat user-emacs-directory "intef.lisp"))
+  "storage location for intef database")
+
 
 (defvar intef-marked-rows nil
   "marked rows in intef buffer")
@@ -20,6 +25,14 @@
                   (end-of-file nil))))
           (progn (with-temp-file intef-file) nil))))
 
+(defun intef-read-sexp-db (filename)
+  (with-temp-buffer
+    (let ((point (point-marker)))
+      (insert-file-contents filename)
+      (condition-case nil
+          (read point)
+        (end-of-file nil)))))
+
 (defun intef-maybe-read-db ()
   (when (eq intef-db 'unloaded) (intef-read-db))
   intef-db)
@@ -30,6 +43,10 @@
   (setq intef-db 'unloaded)
   t)
 
+(defun intef-write-sexp-db (db filename)
+  (with-temp-file filename
+    (print db (current-buffer))))
+
 (cl-defun intef-format-cell (str &optional (width 40))
   (let ((n (length str)))
     (cond
@@ -37,46 +54,64 @@
      ((< n width) (string-pad str width))
      (t str))))
 
-(defun intef ()
+(defun intef-save-buffer ()
   (interactive)
-  (let* ((buf-exists-p (get-buffer "*Intef*"))
-         (buf (get-buffer-create "*Intef*")))
-    (switch-to-buffer buf)
-    (if (not buf-exists-p)
-        (progn
-          (if intef-db
-              (progn
-                (insert "  " (intef-format-cell "file" 60))
-                (insert  " ⯁ ")
-                (insert (intef-format-cell "tag" 20))
-                (insert  " ⯁ ")
-                (insert (intef-format-cell "value") ?\n)
-                (intef-read-db)
-                (cl-loop
-                 for filedata in intef-db do
-                 (let ((filename (car filedata))
-                       (tags (cdr filedata)))
-                   (cl-loop
-                    for tagdata in tags do
-                    (let ((tagname (car tagdata))
-                          (values (cdr tagdata)))
-                      (cl-loop
-                       for value in values do ; if filename has some tag, it always has at least the value "ε"
-                       (let ((beg (point)))
-                         (insert "  " (intef-format-cell filename 60))
-                         (insert  " ⯁ ")
-                         (insert (intef-format-cell tagname 20))
-                         (insert  " ⯁ ")
-                         (insert (intef-format-cell value) ?\n)
-                         (add-text-properties
-                          beg (point)
-                          (list 'data
-                                (cons filedata
-                                      (cons tagdata
-                                            value))))))))))
-                (goto-char (point-min)))
-            (insert "you have not tagged any files yet"))
-          (intef-mode)))))
+  (message "Saving file %s..." intef-file-)
+  (intef-write-sexp-db intef-db- intef-file-)
+  (message "Wrote %s" intef-file-)
+  (set-buffer-modified-p nil)
+  t)
+
+(defun intef-stale-function (&optional _noconfirm)
+  (buffer-modified-p))
+
+(defun intef (filename)
+  (interactive (list intef-file))
+  (let* ((filename intef-file))
+    (let* ((intef-filename (file-name-nondirectory filename))
+           (intef-buffer-name (concat "intef: " intef-filename))
+           (buf-exists-p (get-buffer intef-buffer-name))
+           (buf (get-buffer-create intef-buffer-name)))
+      (switch-to-buffer buf)
+      (if (not buf-exists-p)
+          (progn
+            (let ((db (intef-read-sexp-db filename)))
+              (if db
+                  (progn
+                    (insert "  " (intef-format-cell "file" 60))
+                    (insert  " ⯁ ")
+                    (insert (intef-format-cell "tag" 20))
+                    (insert  " ⯁ ")
+                    (insert (intef-format-cell "value") ?\n)
+                    (intef-read-db)
+                    (cl-loop
+                     for filedata in db do
+                     (let ((filename (car filedata))
+                           (tags (cdr filedata)))
+                       (cl-loop
+                        for tagdata in tags do
+                        (let ((tagname (car tagdata))
+                              (values (cdr tagdata)))
+                          (cl-loop
+                           for value in values do ; if filename has some tag, it always has at least the value "ε"
+                           (let ((beg (point)))
+                             (insert "  " (intef-format-cell filename 60))
+                             (insert  " ⯁ ")
+                             (insert (intef-format-cell tagname 20))
+                             (insert  " ⯁ ")
+                             (insert (intef-format-cell value) ?\n)
+                             (add-text-properties
+                              beg (point)
+                              (list 'data
+                                    (cons filedata
+                                          (cons tagdata
+                                                value))))))))))
+                    (goto-char (point-min)))
+                (insert "you have not tagged any files yet"))
+              (intef-mode)
+              (set-buffer-modified-p nil)
+              (setq intef-file- filename)
+              (setq intef-db- db)))))))
 
 ;; rename to intef-merge, two arguments instead of one
 (defun intef-tag-multiple (data) ;; make looping code more uniform
@@ -216,7 +251,8 @@
   (cl-loop
    for (_ tag-data . _) in rows do
    (unless (member value (cdr tag-data))
-     (setf (cdr tag-data) (cons value (cdr tag-data))))))
+     (setf (cdr tag-data) (cons value (cdr tag-data)))))
+  (set-buffer-modified-p t))
 
 (defun intef-remove-value-from-tag (rows)
   (interactive
@@ -248,6 +284,7 @@
     (keymap-set map "f" #'forward-char)
     (keymap-set map "m" #'intef-mark-rows)
     (keymap-set map "u" #'intef-unmark-rows)
+    (keymap-set map "<remap> <save-buffer>" #'intef-save-buffer)
     map))
 
 (define-derived-mode intef-mode special-mode "Intef"
