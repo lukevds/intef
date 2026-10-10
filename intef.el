@@ -1,373 +1,268 @@
 ; -*- lexical-binding: t -*-
 
-
+(defvar intef-db 'unloaded
+  "intef tagged files")
 
-(defgroup intef nil
-  "Tag computer files."
-  :group 'tools)
-
-(defvar intef-buffer nil
-  "Intef buffer, if any.")
-
-(defcustom intef-database-filename "/home/lvds/Projects/personal/file-tagging/test.lisp"
-  "Filename of database currently open.
-`nil' if no database is open."
-  :type '(file)
-  :group 'intef)
-
-(defvar intef-database nil
-  "Database  currently open in hash-table format.
-`nil' if no database is open.")
+(defvar intef-file (expand-file-name (concat user-emacs-directory "intef.lisp"))
+  "storage location for intef database")
 
 (defvar intef-marked-rows nil
-  "Set of marked rows in Intef buffer")
+  "marked rows in intef buffer")
 
-;; database operations
-
+(defun intef-read-db ()
+  (setq intef-db
+        (if (file-exists-p intef-file)
+            (with-temp-buffer
+              (let ((point (point-marker)))
+                (insert-file-contents intef-file)
+                (condition-case nil
+                    (read point)
+                  (end-of-file nil))))
+          (progn (with-temp-file intef-file) nil))))
 
-(defun intef--read-database-file ()
-  "Returns hash-table generated from alist in`intef-database-filename'.
+(defun intef-maybe-read-db ()
+  (when (eq intef-db 'unloaded) (intef-read-db))
+  intef-db)
 
-The database file should be a lisp data file containing an alist from
-filenames to alists.  The latter alists are mappings from tags to
-values.  Filenames will be the hash-table keys and the alists will be
-values.
+(defun intef-write-db ()
+  (with-temp-file intef-file
+    (print intef-db (current-buffer)))
+  (setq intef-db 'unloaded)
+  t)
 
-A filename contains one or more tags, and each tag associated to a
-filename contains zero or more values.  Filenames, tags and values are
-all strings.
-
-`intef-database' value is set to be the database."
-  (or
-   intef-database
-   (setq intef-database
-         (with-temp-buffer
-           (let ((table (make-hash-table :test 'equal)))
-             (cl-loop for (filename . assocs) in
-                      (condition-case nil
-                          (read (prog1 (point-marker)
-                                  (insert-file-contents intef-database-filename)))
-                        (end-of-file nil))
-                      do (puthash filename assocs table))
-             table)))))
-
-(defun intef--write-database-file ()
-  "Writes `intef-database' to `intef-database-filename' in alist format.
-Each key of `intef-database' is a filename and its respective value is
-an alist from tag to values. For more information on
-`intef-database-filename's format read documentation of
-`intef--read-database-file'."
-  (if intef-database
-      (with-temp-file intef-database-filename
-        (let ((buf (current-buffer)))
-          (erase-buffer)
-          (insert ?\()
-          (cl-loop for k being the hash-keys of intef-database
-                   using (hash-values v)
-                   do
-                   (insert ?\()
-                   (prin1 k buf)
-                   (insert ?.)
-                   (prin1 v buf)
-                   (insert ?\)))
-          (insert ?\))))))
-
-(defun intef--tag-file-with-value (filename tag value)
-  "Tags `FILENAME' to `TAG' with `VALUE'."
-  (let ((filename (expand-file-name filename)))
-    (if-let* ((assocs (gethash filename intef-database)))
-        (if-let* ((tag-values (assoc tag assocs 'string-equal)))
-            (unless (member value tag-values)
-              (setcdr tag-values (cons value (cdr tag-values))))
-          (setcdr assocs (cons (list tag value) (cdr assocs))))
-      (puthash filename (list (list tag value)) intef-database))))
-
-(defun intef--remove-tag-value (filename tag value)
-  "Removes `VALUE' from `TAG' of `FILENAME'."
-  (if-let* ((tag-values
-             (assoc tag (gethash filename intef-database)
-                    'string-equal)))
-      (setcdr tag-values (delete value (cdr tag-values)))))
-
-(defun intef--remove-tag (filename tag)
-  "Untags `TAG' from `FILENAME'.
-Note that `TAG's values in `FILENAME', if present, will be lost."
-  (if-let* ((assocs (gethash filename intef-database)))
-      (puthash
-       filename (assoc-delete-all tag assocs 'string-equal)
-       intef-database)))
-
-(defun intef--remove-filename (filename)
-  "Removes `FILENAME' from database.
-Note that all tags and values associated with `FILENAME' will be lost."
-  (remhash filename intef-database))
-
-(defun intef--rename-tag-value (filename tag old-value new-value)
-  "Renames `OLD-VALUE' to `NEW-VALUE' of `TAG' of `FILENAME'."
-  (if-let* ((assocs (gethash filename intef-database))
-            (tag-values (assoc tag assocs 'string-equal))
-            (stored-value (member old-value (cdr tag-values))))
-      (setcar stored-value new-value)))
-
-(defun intef--rename-tag (filename old-tag new-tag)
-  "Renames `OLD-TAG' to `NEW-TAG' of `FILENAME'."
-  (if-let* ((assocs (gethash filename intef-database))
-            (tag-values (assoc old-tag assocs 'string-equal)))
-      (setcar tag-values new-tag))) ;; test this one
-
-(defun intef--rename-filename (old-filename new-filename)
-  "Renames `OLD-FILENAME' to `NEW-FILENAME'."
-  (if-let* ((assocs (gethash filename intef-database)))
-      (progn
-        (puthash new-filename assocs intef-database)
-        (remhash old-filename hash-table)))) ;; also test
-    
-
-;; rendering, sorting and filtering
-
-
-(defun intef--render (hash-table sort-fn filter-fn)
-  (setq buffer-read-only nil)
-  (erase-buffer)
-  (cl-loop
-   for file being the hash-keys of hash-table
-   using (hash-values tags) do
-   (let ((file-start (point)))
-     (cl-loop
-      for (tag . values) in tags do
-      (let ((tag-start (point)))
-        (cl-loop
-         for value in values do
-         (let ((value-start (point))
-               (row (list file tag value)))
-           (add-text-properties
-            (point)
-            (progn
-              (insert ? 
-                      (if (member row intef-marked-rows) 42 ? )
-                      ? )
-              (point))
-            '(column mark))
-
-           (add-text-properties
-            (point)
-            (progn (insert file ? ) (point))
-            '(column file))
-
-           (add-text-properties
-            (1- (point))
-            (point)
-            '(sep t))
-           
-           (add-text-properties
-            (point)
-            (progn (insert tag ? ) (point))
-            '(column tag))
-           (add-text-properties
-            (1- (point))
-            (point)
-            '(sep t))
-           
-           (add-text-properties
-            (point)
-            (progn (insert value ?\n) (point))
-            '(column value))
-           (add-text-properties
-            (1- (point))
-            (point)
-            '(sep t))
-           
-           (add-text-properties
-            value-start (point)
-            `(value ,value))))
-        (add-text-properties
-         tag-start (point)
-         `(tag ,tag))))
-     (add-text-properties
-      file-start (point)
-      `(file ,file))))
-  (setq buffer-read-only t))
-
-;; mode and setup
-
-
-(defun intef--revert-buffer-function (file-name read-auto-save)
-  (intef--render intef-database nil nil))
-
-(defun intef--kill-buffer-hook ()
-  (intef--write-database-file)
-  (setq intef-database nil
-        intef-buffer nil
-        intef-marked-rows nil))
-
-(defun intef--setup (sort-fn filter-fn &optional re-render)
-  (when (and re-render intef-buffer) (kill-buffer intef-buffer))
-  (if intef-buffer (switch-to-buffer intef-buffer)
-    (let ((buff (get-buffer-create "*Intef*")))
-      (switch-to-buffer buff)
-      (intef-mode)
-      (setq intef-buffer buff)
-      (intef--read-database-file)
-      (setq-local revert-buffer-function
-                  #'intef--revert-buffer-function)
-      (add-hook 'kill-buffer-hook #'intef--kill-buffer-hook nil t)
-      (intef--render intef-database sort-fn filter-fn))))
-
-(define-derived-mode intef-mode special-mode "Intef"
-  :interactive nil)
-
-(keymap-set intef-mode-map "m" #'intef-buffer-mark-rows)
-(keymap-set intef-mode-map "u" #'intef-buffer-unmark-rows)
+(cl-defun intef-format-cell (str &optional (width 40))
+  (let ((n (length str)))
+    (cond
+     ((> n width) (concat "…" (substring str (- n (1- width)) n)))
+     ((< n width) (string-pad str width))
+     (t str))))
 
 (defun intef ()
   (interactive)
-  (intef--setup nil nil))
+  (let* ((buf-exists-p (get-buffer "*Intef*"))
+         (buf (get-buffer-create "*Intef*")))
+    (switch-to-buffer buf)
+    (if (not buf-exists-p)
+        (progn
+          (if intef-db
+              (progn
+                (insert "  " (intef-format-cell "file" 60))
+                (insert  " ⯁ ")
+                (insert (intef-format-cell "tag" 20))
+                (insert  " ⯁ ")
+                (insert (intef-format-cell "value") ?\n)
+                (intef-read-db)
+                (cl-loop
+                 for filedata in intef-db do
+                 (let ((filename (car filedata))
+                       (tags (cdr filedata)))
+                   (cl-loop
+                    for tagdata in tags do
+                    (let ((tagname (car tagdata))
+                          (values (cdr tagdata)))
+                      (cl-loop
+                       for value in values do ; if filename has some tag, it always has at least the value "ε"
+                       (let ((beg (point)))
+                         (insert "  " (intef-format-cell filename 60))
+                         (insert  " ⯁ ")
+                         (insert (intef-format-cell tagname 20))
+                         (insert  " ⯁ ")
+                         (insert (intef-format-cell value) ?\n)
+                         (add-text-properties
+                          beg (point)
+                          (list 'data
+                                (cons filedata
+                                      (cons tagdata
+                                            value))))))))))
+                (goto-char (point-min)))
+            (insert "you have not tagged any files yet"))
+          (intef-mode)))))
 
-;; commands
-
+;; rename to intef-merge, two arguments instead of one
+(defun intef-tag-multiple (data) ;; make looping code more uniform
+  (intef-maybe-read-db)
+  (cl-loop for (filename . tags) in data do
+           (let ((filename-data (assoc-string filename intef-db)))
+             (if filename-data
+                 (cl-loop for tag in tags do
+                          (let* ((tagname (car tag))
+                                 (values (or (cdr tag) '("ε")))
+                                 (tag-data (assoc-string tagname (cdr filename-data))))
+                            (if tag-data
+                                (cl-loop for value in values do
+                                         (unless (member value (cdr tag-data))
+                                           (setf (cdr tag-data) (cons value (cdr tag-data)))))
+                              (setf (cdr filename-data)
+                                    (cons (cons tagname values) (cdr filename-data))))))
+               (setq intef-db (cons (cons filename tags) intef-db))))))
 
-(defun intef-tag-file (filename tag value)
-  (interactive
-   (list (expand-file-name (read-file-name "file: " nil (buffer-file-name)))
-         (read-string (format-prompt "tag" "\"untagged\"") nil nil "untagged")
-         (read-string "value: ")))
-  (intef--read-database-file)
-  (intef--tag-file-with-value filename tag value))
-  
+(defun intef-tag-files (filenames tag value)
+  (when filenames
+    (intef-tag-multiple
+     (cl-loop for filename in filenames collect
+              (cons filename (list (cons tag (list value))))))
+    t))
 
-(defun intef-tag-buffer-file (filename tag value)
-  (interactive
-   (let ((filename (buffer-file-name)))
-     (if filename
-         (list filename
-               (read-string (format-prompt "tag" "\"untagged\"") nil nil "untagged")
-               (read-string "value: "))
-       (list nil nil nil))))
-  (if filename
-      (progn
-        (intef--read-database-file)
-        (intef--tag-file-with-value filename tag value))
-    (message "Buffer is not associated to a file, could not tag it.")))
-
-(defun intef-tag-files-dired (filenames tag value)
+(defun intef-dired-tag-file (filenames tag value)
   (interactive
    (let ((files (dired-get-marked-files)))
      (if files
          (list files
-               (read-string (format-prompt "tag" "\"untagged\"") nil nil "untagged")
-               (read-string "value: "))
+               (read-string (format-prompt "tag" " \"ε\"") nil nil "ε")
+               (read-string "value: " nil nil "ε"))
        (list nil nil nil))))
-  (if filenames
-      (progn
-        (intef--read-database-file)
-        (cl-loop
-         for file in filenames do
-         (intef--tag-file-with-value file tag value)))
+  (unless (intef-tag-files filenames tag value)
     (message "Please mark some files before tagging them.")))
 
-(defun intef-save-and-exit ()
-  (interactive)
-  (if intef-buffer
-      (kill-buffer intef-buffer)
-    (intef--kill-buffer-hook)))
+(defvar intef-dired-mode-map ;; active when commiting in magit? why? not using setq-local
+  (let ((map (make-sparse-keymap)))
+    (keymap-set map "C-c C-c" #'intef-dired-tag-file)
+    map))
 
-(defun intef-buffer-mark-rows ()
-  (interactive)
-  (setq buffer-read-only nil)
-  (if (use-region-p)
-      (save-excursion
-        (let* ((reg-beg (region-beginning))
-               (reg-end (region-end))
-               (beg (progn
-                      (goto-char reg-beg)
-                      (forward-line 0)
-                      (point)))
-               (end (progn
-                      (goto-char reg-end)
-                      (end-of-line)
-                      (point))))
-          (goto-char beg)
-          (while (< (point) end)
-            (let ((row
-                   (list
-                    (get-text-property (point) 'file)
-                    (get-text-property (point) 'tag)
-                    (get-text-property (point) 'value))))
-              (unless (member row intef-marked-rows)
-                (setq intef-marked-rows
-                      (cons row intef-marked-rows))
-                (forward-char)
-                (delete-char 1)
-                (insert 42)))
-            (forward-line 1))))
-    (let ((row
-           (list
-            (get-text-property (point) 'file)
-            (get-text-property (point) 'tag)
-            (get-text-property (point) 'value))))
-      (forward-line 0)
-      (unless (member row intef-marked-rows)
-        (setq intef-marked-rows
-              (cons row intef-marked-rows))
-        (forward-char)
-        (delete-char 1)
-        (insert 42)))
-    (forward-line 1))
-  (setq buffer-read-only t))
 
-(defun intef-buffer-unmark-rows ()
-  (interactive)
-  (setq buffer-read-only nil)
-  (if (use-region-p)
-      (save-excursion
-        (let* ((reg-beg (region-beginning))
-               (reg-end (region-end))
-               (beg (progn
-                      (goto-char reg-beg)
-                      (forward-line 0)
-                      (point)))
-               (end (progn
-                      (goto-char reg-end)
-                      (end-of-line)
-                      (point))))
-          (goto-char beg)
-          (while (< (point) end)
-            (let ((row
-                   (list
-                    (get-text-property (point) 'file)
-                    (get-text-property (point) 'tag)
-                    (get-text-property (point) 'value))))
-              (when (member row intef-marked-rows)
-                (setq intef-marked-rows
-                      (delete row intef-marked-rows))
-                (forward-char)
-                (delete-char 1)
-                (insert ? )))
-            (forward-line 1))))
-    (let ((row
-           (list
-            (get-text-property (point) 'file)
-            (get-text-property (point) 'tag)
-            (get-text-property (point) 'value))))
-      (forward-line 0)
-      (when (member row intef-marked-rows)
-        (setq intef-marked-rows
-              (delete row intef-marked-rows))
-        (forward-char)
-        (delete-char 1)
-        (insert ? )))
-    (forward-line 1))
-  (setq buffer-read-only t))
+(defvar-local intef-dired-mode nil)
 
-(defun intef-buffer-files-tag (filenames tag value)
-  "Tags selected files")
+(defun intef-dired-mode (&optional arg)
+  (interactive (list (if current-prefix-arg (prefix-numeric-value current-prefix-arg) 'toggle)))
+  (if (eq major-mode 'dired-mode)
+    (let ((last-message (current-message)))
+      (setq intef-dired-mode
+            (cond
+             ((eq arg 'toggle) (not intef-dired-mode))
+             ((and (numberp arg) (< arg 1)) nil)
+             (t t)))
+      (when (boundp 'local-minor-modes)
+        (setq local-minor-modes (delq 'intef-dired-mode local-minor-modes))
+        (when intef-dired-mode
+          (push 'intef-dired-mode local-minor-modes)))
+      (run-hooks 'intef-dired-mode-hook (if intef-dired-mode 'intef-dired-mode-on-hook 'intef-dired-mode-off-hook))
+      (if (called-interactively-p 'any)
+          (unless (and (current-message) (not (equal last-message (current-message))))
+            (let ((local " in current buffer"))
+              (message "%s %sabled%s" "Intef-Dired mode" (if intef-dired-mode "en" "dis") local)))))
+    (message "cannot use intef-dired-mode outside of Dired")))
 
-(defun intef-buffer-sort-custom (sort-fn))
+(defvar intef-dired-mode-hook nil)
+(put 'intef-dired-mode-hook 'custom-type 'hook)
+(put 'intef-dired-mode-hook 'standard-value (list nil))
 
-(defun intef-buffer-filter-custom (filter-fn)
+;; (setq minor-mode-map-alist (assq-delete-all 'intef-dired-mode minor-mode-map-alist))
+(add-to-list 'minor-mode-map-alist (cons 'intef-dired-mode intef-dired-mode-map))
+
+(defun delq-first (elt list)
+  (let ((original list))
+    (if (eq (car list) elt)
+        (setq original (cdr list))
+      (while list
+        (if (eq (cadr list) elt)
+            (progn
+              (setcdr list (cddr list))
+              (setq list nil))
+          (setq list (cdr list)))))
+      original))
+
+(defun intef-mark-rows (beg &optional end)
+  (interactive
+   (if (use-region-p)
+       (list (region-beginning) (region-end))
+     (list (point) (point))))
+  (save-excursion
+    (goto-char beg)
+    (forward-line
+     (if (get-text-property (point) 'data) 0 1))
+    (setq buffer-read-only nil)
+    (let ((lines-left-to-move 0))
+      (while (and (<= (point) end) (zerop lines-left-to-move))
+        (let ((data (get-text-property (point) 'data)))
+          (unless (memq data intef-marked-rows)
+            (setq intef-marked-rows (cons data intef-marked-rows))
+            (forward-char 1)
+            (insert 42)
+            (delete-char 1)))
+        (setq lines-left-to-move
+              (forward-line 1))))
+    (setq buffer-read-only t))
+  (if (= beg end) (next-line) (deactivate-mark)))
+
+(defun intef-unmark-rows (beg &optional end)
+  (interactive
+   (if (use-region-p)
+       (list (region-beginning) (region-end))
+     (list (point) (point))))
+  (save-excursion
+    (goto-char beg)
+    (forward-line
+     (if (get-text-property (point) 'data) 0 1))
+    (setq buffer-read-only nil)
+    (let ((lines-left-to-move 0))
+      (while (and (<= (point) end) (zerop lines-left-to-move))
+        (let ((data (get-text-property (point) 'data)))
+          (when (memq data intef-marked-rows)
+            (setq intef-marked-rows (delq-first data intef-marked-rows))
+            (forward-char 1)
+            (insert 32)
+            (delete-char 1)))
+        (setq lines-left-to-move
+              (forward-line 1))))
+    (setq buffer-read-only t))
+  (if (= beg end) (next-line) (deactivate-mark)))
+
+(defun intef-add-value-to-tag (rows value)
   (interactive
    (list
-    (eval-minibuffer "Sort function: " "(lambda (file tag value) t)")))
-  (intef--setup nil filter-fn t))
+    (or intef-marked-rows
+        (list (get-text-property (point) 'data)))
+    (read-string "value: ")))
+  (cl-loop
+   for (_ tag-data . _) in rows do
+   (unless (member value (cdr tag-data))
+     (setf (cdr tag-data) (cons value (cdr tag-data))))))
 
-(provide 'intef)
+(defun intef-remove-value-from-tag (rows)
+  (interactive
+   (list
+    (or intef-marked-rows
+        (list (get-text-property (point) 'data)))))
+  (cl-loop
+   for (data tag-data . value) in rows do
+   (if (= (length (cdr tag-data)) 1)
+       (setf (cdr data) (delq-first tag-data (cdr data)))
+     (setf (cdr tag-data) (delq-first value (cdr tag-data))))))
+
+(defun intef-tag-file (filenames tag value)
+  (interactive
+   (list (or intef-marked-rows
+             (list (get-text-property (point) 'data)))
+         (read-string (format-prompt "tag" " \"ε\"") nil nil "ε")
+         (read-string "value: " nil nil "ε")))
+  (unless (intef-tag-files filenames tag value)
+    (message "Could not tag files.")))
+
+;; save file
+
+(defvar intef-mode-map
+  (let ((map (make-sparse-keymap)))
+    (keymap-set map "p" #'previous-line)
+    (keymap-set map "n" #'next-line)
+    (keymap-set map "b" #'backward-char)
+    (keymap-set map "f" #'forward-char)
+    (keymap-set map "m" #'intef-mark-rows)
+    (keymap-set map "u" #'intef-unmark-rows)
+    map))
+
+(define-derived-mode intef-mode special-mode "Intef"
+  "intef"
+  :interactive nil)
+
+;; next:
+;; associate to a file (the db), revert buffer, save buffer
+;; mark by regexp
+;; invert tag
+;; completion
+;; intef-global-minor-mode: tags current file
+
+;; discussion
+;; create interface for db?
+;; export db, export filter
+;; at what point should I stop to tag my files?
+;; configure file visit, so it's easy to work with multiple dbs
